@@ -15,12 +15,12 @@ npm install
 ```bash
 npm run dev
 ```
-- Frontend: `http://localhost:3000`
-- Socket backend: `http://localhost:4000`
+- Frontend: your deployed Next.js URL
+- Socket backend: `https://hardumo.onrender.com`
 
 ## Environment variables
 Optional:
-- `NEXT_PUBLIC_SOCKET_URL` (default: `http://localhost:4000`)
+- `NEXT_PUBLIC_SOCKET_URL` (default: `https://hardumo.onrender.com`)
 - `SOCKET_PORT` (default: `4000`)
 
 ## MVP behavior
