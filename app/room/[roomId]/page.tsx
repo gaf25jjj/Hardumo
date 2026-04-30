@@ -28,18 +28,28 @@ export default function RoomPage() {
   const playerRef = useRef<ReactPlayer>(null);
   const socketRef = useRef<Socket | null>(null);
   const isRemoteSync = useRef(false);
+  const latestVideoInputRef = useRef(videoInput);
+  const vkPlayingRef = useRef(vkPlaying);
 
   const video = useMemo(() => parseVideoInput(videoInput), [videoInput]);
 
   useEffect(() => {
+    latestVideoInputRef.current = videoInput;
+  }, [videoInput]);
+
+  useEffect(() => {
+    vkPlayingRef.current = vkPlaying;
+  }, [vkPlaying]);
+
+  useEffect(() => {
     if (!joined) return;
-    const socket = io(SERVER_URL, {
-      transports: ['websocket'],
-      secure: true
+    const socket = io('https://hardumo.onrender.com', {
+      transports: ['polling', 'websocket']
     });
     socketRef.current = socket;
 
-    socket.emit('room:join', { roomId, name, videoUrl: videoInput });
+    socket.emit('join-room', roomId, name);
+    socket.emit('room:join', { roomId, name, videoUrl: latestVideoInputRef.current });
 
     socket.on('room:state', ({ videoUrl, users, messages }) => {
       if (videoUrl) setVideoInput(videoUrl);
@@ -64,13 +74,13 @@ export default function RoomPage() {
 
     socket.on('video:seek', ({ time }) => {
       isRemoteSync.current = true;
-      syncToTime(time, vkPlaying);
+      syncToTime(time, vkPlayingRef.current);
     });
 
     return () => {
       socket.disconnect();
     };
-  }, [joined, name, roomId, videoInput, vkPlaying]);
+  }, [joined, name, roomId]);
 
   const syncToTime = (seconds: number, shouldPlay: boolean) => {
     if (video?.source === 'youtube') {
@@ -87,7 +97,7 @@ export default function RoomPage() {
       isRemoteSync.current = false;
       return;
     }
-    socketRef.current?.emit(event, { roomId, time: seconds, videoUrl: videoInput });
+    socketRef.current?.emit(event, { roomId, time: seconds, videoUrl: latestVideoInputRef.current });
   };
 
   const sendChat = () => {
@@ -149,7 +159,13 @@ export default function RoomPage() {
                 onError={() => setError('Не удалось загрузить это YouTube-видео.')}
                 onPlay={() => emitSync('video:play', playerRef.current?.getCurrentTime() ?? 0)}
                 onPause={() => emitSync('video:pause', playerRef.current?.getCurrentTime() ?? 0)}
-                onSeek={(seconds) => socketRef.current?.emit('video:seek', { roomId, time: seconds })}
+                onSeek={(seconds) => {
+                  if (isRemoteSync.current) {
+                    isRemoteSync.current = false;
+                    return;
+                  }
+                  socketRef.current?.emit('video:seek', { roomId, time: seconds });
+                }}
               />
             ) : video?.source === 'vk' ? (
               <iframe
