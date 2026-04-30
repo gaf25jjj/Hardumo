@@ -2,37 +2,37 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { extractYouTubeVideoId } from '@/lib/youtube';
+import { parseVideoInput } from '@/lib/video';
 import { generateRoomId } from '@/lib/room';
 
 export default function HomePage() {
-  const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [videoUrl, setVideoUrl] = useState('');
   const [joinRoomId, setJoinRoomId] = useState('');
   const [error, setError] = useState('');
   const router = useRouter();
 
   const createRoom = () => {
-    const videoId = extractYouTubeVideoId(youtubeUrl);
-    if (!videoId) {
-      setError('Please enter a valid YouTube link.');
+    const parsed = parseVideoInput(videoUrl);
+    if (!parsed) {
+      setError('Please enter a valid YouTube or VK video link.');
       return;
     }
     const roomId = generateRoomId();
-    router.push(`/room/${roomId}?videoId=${videoId}`);
+    router.push(`/room/${roomId}?video=${encodeURIComponent(parsed.watchUrl)}`);
   };
 
   return (
     <main className="min-h-screen flex items-center justify-center bg-gradient-to-b from-black to-slate-900 px-6">
       <div className="panel w-full max-w-2xl p-8 space-y-6">
         <h1 className="text-4xl font-bold">Hardumo Watch Party</h1>
-        <p className="text-white/70">A simple synchronized YouTube watch room for friends.</p>
+        <p className="text-white/70">A simple synchronized YouTube and VK watch room for friends.</p>
 
         <div className="space-y-3">
-          <label className="block text-sm text-white/80">YouTube video link</label>
+          <label className="block text-sm text-white/80">Video link (YouTube or VK)</label>
           <input
-            value={youtubeUrl}
-            onChange={(e) => setYoutubeUrl(e.target.value)}
-            placeholder="https://www.youtube.com/watch?v=..."
+            value={videoUrl}
+            onChange={(e) => setVideoUrl(e.target.value)}
+            placeholder="https://www.youtube.com/watch?v=... or https://vk.com/video..."
             className="w-full rounded-lg bg-black/30 border border-white/15 px-4 py-3 outline-none focus:border-accent"
           />
           <button onClick={createRoom} className="w-full rounded-lg bg-accent py-3 font-semibold hover:opacity-90">

@@ -5,7 +5,7 @@ import { Server } from 'socket.io';
 
 type ChatMessage = { id: string; user: string; text: string; ts: number; system?: boolean };
 type User = { id: string; name: string };
-type RoomState = { videoId: string; users: User[]; messages: ChatMessage[] };
+type RoomState = { videoUrl: string; users: User[]; messages: ChatMessage[] };
 
 const app = express();
 app.use(cors({ origin: '*' }));
@@ -18,15 +18,15 @@ const io = new Server(server, {
 const rooms = new Map<string, RoomState>();
 
 const ensureRoom = (roomId: string): RoomState => {
-  if (!rooms.has(roomId)) rooms.set(roomId, { videoId: '', users: [], messages: [] });
+  if (!rooms.has(roomId)) rooms.set(roomId, { videoUrl: '', users: [], messages: [] });
   return rooms.get(roomId)!;
 };
 
 io.on('connection', (socket) => {
-  socket.on('room:join', ({ roomId, name, videoId }) => {
+  socket.on('room:join', ({ roomId, name, videoUrl }) => {
     socket.join(roomId);
     const room = ensureRoom(roomId);
-    if (videoId && !room.videoId) room.videoId = videoId;
+    if (videoUrl && !room.videoUrl) room.videoUrl = videoUrl;
     room.users.push({ id: socket.id, name });
 
     const joinMsg = { id: crypto.randomUUID(), user: 'System', text: `${name} joined the room`, ts: Date.now(), system: true };
