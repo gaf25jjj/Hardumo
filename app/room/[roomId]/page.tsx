@@ -4,10 +4,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import ReactPlayer from 'react-player/youtube';
 import { io, Socket } from 'socket.io-client';
-import { toYouTubeUrl } from '@/lib/youtube';
+import { parseVideoInput } from '@/lib/video';
 
 type ChatMessage = { id: string; user: string; text: string; ts: number; system?: boolean };
-
 type PresenceUser = { id: string; name: string };
 
 const SERVER_URL = process.env.NEXT_PUBLIC_SOCKET_URL ?? 'http://localhost:4000';
@@ -19,25 +18,28 @@ export default function RoomPage() {
 
   const [name, setName] = useState('');
   const [joined, setJoined] = useState(false);
-  const [videoId, setVideoId] = useState(search.get('videoId') ?? '');
+  const [videoInput, setVideoInput] = useState(search.get('video') ?? '');
   const [chatInput, setChatInput] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [users, setUsers] = useState<PresenceUser[]>([]);
+  const [error, setError] = useState('');
+  const [vkTime, setVkTime] = useState(0);
+  const [vkPlaying, setVkPlaying] = useState(false);
   const playerRef = useRef<ReactPlayer>(null);
   const socketRef = useRef<Socket | null>(null);
   const isRemoteSync = useRef(false);
 
-  const videoUrl = useMemo(() => (videoId ? toYouTubeUrl(videoId) : ''), [videoId]);
+  const video = useMemo(() => parseVideoInput(videoInput), [videoInput]);
 
   useEffect(() => {
     if (!joined) return;
     const socket = io(SERVER_URL);
     socketRef.current = socket;
 
-    socket.emit('room:join', { roomId, name, videoId });
+    socket.emit('room:join', { roomId, name, videoUrl: videoInput });
 
-    socket.on('room:state', ({ videoId, users, messages }) => {
-      setVideoId(videoId);
+    socket.on('room:state', ({ videoUrl, users, messages }) => {
+      if (videoUrl) setVideoInput(videoUrl);
       setUsers(users);
       setMessages(messages);
     });
@@ -45,34 +47,44 @@ export default function RoomPage() {
     socket.on('presence:update', (users) => setUsers(users));
     socket.on('chat:new', (msg) => setMessages((prev) => [...prev, msg]));
 
-    socket.on('video:play', ({ time, videoId }) => {
+    socket.on('video:play', ({ time, videoUrl }) => {
       isRemoteSync.current = true;
-      if (videoId) setVideoId(videoId);
-      playerRef.current?.seekTo(time, 'seconds');
+      if (videoUrl) setVideoInput(videoUrl);
+      syncToTime(time, true);
     });
 
-    socket.on('video:pause', ({ time }) => {
+    socket.on('video:pause', ({ time, videoUrl }) => {
       isRemoteSync.current = true;
-      playerRef.current?.seekTo(time, 'seconds');
+      if (videoUrl) setVideoInput(videoUrl);
+      syncToTime(time, false);
     });
 
     socket.on('video:seek', ({ time }) => {
       isRemoteSync.current = true;
-      playerRef.current?.seekTo(time, 'seconds');
+      syncToTime(time, vkPlaying);
     });
 
     return () => {
       socket.disconnect();
     };
-  }, [joined, name, roomId, videoId]);
+  }, [joined, name, roomId, videoInput, vkPlaying]);
+
+  const syncToTime = (seconds: number, shouldPlay: boolean) => {
+    if (video?.source === 'youtube') {
+      playerRef.current?.seekTo(seconds, 'seconds');
+      return;
+    }
+    // VK iframe has no direct JS API in this app, so we keep a synced timeline state.
+    setVkTime(seconds);
+    setVkPlaying(shouldPlay);
+  };
 
   const emitSync = (event: 'video:play' | 'video:pause', seconds: number) => {
     if (isRemoteSync.current) {
-      // Prevent host/client event ping-pong loops after a remote state update.
       isRemoteSync.current = false;
       return;
     }
-    socketRef.current?.emit(event, { roomId, time: seconds, videoId });
+    socketRef.current?.emit(event, { roomId, time: seconds, videoUrl: videoInput });
   };
 
   const sendChat = () => {
@@ -83,6 +95,23 @@ export default function RoomPage() {
 
   const copyInvite = async () => {
     await navigator.clipboard.writeText(window.location.href);
+  };
+
+  const vkEmbedUrl = useMemo(() => {
+    if (!video || video.source !== 'vk') return '';
+    const u = new URL(video.embedUrl);
+    if (vkTime > 0) u.searchParams.set('t', String(Math.floor(vkTime)));
+    u.searchParams.set('autoplay', vkPlaying ? '1' : '0');
+    return u.toString();
+  }, [video, vkTime, vkPlaying]);
+
+  const handleVkSeek = (seconds: number) => {
+    setVkTime(seconds);
+    if (isRemoteSync.current) {
+      isRemoteSync.current = false;
+      return;
+    }
+    socketRef.current?.emit('video:seek', { roomId, time: seconds });
   };
 
   if (!joined) {
@@ -105,22 +134,48 @@ export default function RoomPage() {
             <p className="text-sm">Room: <span className="font-bold">{roomId}</span></p>
             <button onClick={copyInvite} className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20">Copy Invite Link</button>
           </div>
+          <p className="text-xs text-white/70">Source: <span className="uppercase font-semibold">{video?.source ?? 'none'}</span></p>
           <div className="aspect-video overflow-hidden rounded-lg bg-black">
-            {videoUrl ? (
+            {video?.source === 'youtube' ? (
               <ReactPlayer
                 ref={playerRef}
-                url={videoUrl}
+                url={video.embedUrl}
                 controls
                 width="100%"
                 height="100%"
+                onError={() => setError('Could not load this YouTube video.')}
                 onPlay={() => emitSync('video:play', playerRef.current?.getCurrentTime() ?? 0)}
                 onPause={() => emitSync('video:pause', playerRef.current?.getCurrentTime() ?? 0)}
                 onSeek={(seconds) => socketRef.current?.emit('video:seek', { roomId, time: seconds })}
+              />
+            ) : video?.source === 'vk' ? (
+              <iframe
+                key={vkEmbedUrl}
+                src={vkEmbedUrl}
+                className="w-full h-full border-0"
+                allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                allowFullScreen
+                onError={() => setError('Could not load this VK video. Try a public vk.com/video_ext.php link.')}
+                title="VK Video"
               />
             ) : (
               <div className="h-full flex items-center justify-center text-white/60">No video set yet.</div>
             )}
           </div>
+
+          {video?.source === 'vk' ? (
+            <div className="rounded bg-black/30 p-3 space-y-2">
+              <p className="text-xs text-white/70">VK Sync Controls</p>
+              <div className="flex gap-2">
+                <button className="rounded bg-accent px-3 py-1 text-sm" onClick={() => { setVkPlaying(true); emitSync('video:play', vkTime); }}>Play</button>
+                <button className="rounded bg-white/20 px-3 py-1 text-sm" onClick={() => { setVkPlaying(false); emitSync('video:pause', vkTime); }}>Pause</button>
+              </div>
+              <input type="range" min={0} max={60 * 60 * 3} value={vkTime} onChange={(e) => handleVkSeek(Number(e.target.value))} className="w-full" />
+              <p className="text-xs text-white/60">Synced position: {Math.floor(vkTime)}s</p>
+            </div>
+          ) : null}
+
+          {error ? <p className="text-sm text-red-400">{error}</p> : null}
           <p className="text-xs text-white/60">Connected users: {users.length}</p>
         </section>
 
