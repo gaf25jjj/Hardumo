@@ -8,6 +8,7 @@ import { parseVideoInput } from '@/lib/video';
 
 type ChatMessage = { id: string; user: string; text: string; ts: number; system?: boolean };
 type PresenceUser = { id: string; name: string };
+type PlaybackState = { time: number; isPlaying: boolean; updatedAt: number };
 
 const SERVER_URL = process.env.NEXT_PUBLIC_SOCKET_URL ?? 'https://hardumo.onrender.com';
 
@@ -23,6 +24,10 @@ export default function RoomPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [users, setUsers] = useState<PresenceUser[]>([]);
   const [error, setError] = useState('');
+  const [guestSyncEnabled, setGuestSyncEnabled] = useState(false);
+  const [needsInteraction, setNeedsInteraction] = useState(false);
+  const [playerReady, setPlayerReady] = useState(false);
+  const [pendingPlayback, setPendingPlayback] = useState<PlaybackState | null>(null);
   const [vkTime, setVkTime] = useState(0);
   const [vkPlaying, setVkPlaying] = useState(false);
   const playerRef = useRef<ReactPlayer>(null);
@@ -51,36 +56,59 @@ export default function RoomPage() {
     socket.emit('join-room', roomId, name);
     socket.emit('room:join', { roomId, name, videoUrl: latestVideoInputRef.current });
 
-    socket.on('room:state', ({ videoUrl, users, messages }) => {
+    socket.on('room:state', ({ videoUrl, users, messages, playback }) => {
       if (videoUrl) setVideoInput(videoUrl);
       setUsers(users);
       setMessages(messages);
+      const amHost = users[0]?.id === socket.id;
+      if (amHost) {
+        setGuestSyncEnabled(true);
+      } else {
+        setGuestSyncEnabled(false);
+        setNeedsInteraction(true);
+      }
+      if (playback) {
+        setPendingPlayback(playback);
+      }
     });
 
     socket.on('presence:update', (users) => setUsers(users));
     socket.on('chat:new', (msg) => setMessages((prev) => [...prev, msg]));
 
     socket.on('video:play', ({ time, videoUrl }) => {
+      if (!guestSyncEnabled) return;
       isRemoteSync.current = true;
       if (videoUrl) setVideoInput(videoUrl);
       syncToTime(time, true);
     });
 
     socket.on('video:pause', ({ time, videoUrl }) => {
+      if (!guestSyncEnabled) return;
       isRemoteSync.current = true;
       if (videoUrl) setVideoInput(videoUrl);
       syncToTime(time, false);
     });
 
     socket.on('video:seek', ({ time }) => {
+      if (!guestSyncEnabled) return;
       isRemoteSync.current = true;
       syncToTime(time, vkPlayingRef.current);
+    });
+    socket.on('room:playback-state', (playback: PlaybackState) => {
+      setPendingPlayback(playback);
     });
 
     return () => {
       socket.disconnect();
     };
-  }, [joined, name, roomId]);
+  }, [joined, name, roomId, guestSyncEnabled]);
+
+  useEffect(() => {
+    if (!playerReady || !guestSyncEnabled || !pendingPlayback) return;
+    isRemoteSync.current = true;
+    syncToTime(pendingPlayback.time, pendingPlayback.isPlaying);
+    setPendingPlayback(null);
+  }, [pendingPlayback, playerReady, guestSyncEnabled]);
 
   const syncToTime = (seconds: number, shouldPlay: boolean) => {
     if (video?.source === 'youtube') {
@@ -93,11 +121,18 @@ export default function RoomPage() {
   };
 
   const emitSync = (event: 'video:play' | 'video:pause', seconds: number) => {
+    if (!guestSyncEnabled) return;
     if (isRemoteSync.current) {
       isRemoteSync.current = false;
       return;
     }
     socketRef.current?.emit(event, { roomId, time: seconds, videoUrl: latestVideoInputRef.current });
+  };
+
+  const activateGuestSync = () => {
+    setGuestSyncEnabled(true);
+    setNeedsInteraction(false);
+    socketRef.current?.emit('room:request-playback-state');
   };
 
   const sendChat = () => {
@@ -149,37 +184,49 @@ export default function RoomPage() {
           </div>
           <p className="text-xs text-white/70">Источник: <span className="uppercase font-semibold">{video?.source ?? 'нет'}</span></p>
           <div className="aspect-video overflow-hidden rounded-lg bg-black">
-            {video?.source === 'youtube' ? (
-              <ReactPlayer
-                ref={playerRef}
-                url={video.embedUrl}
-                controls
-                width="100%"
-                height="100%"
-                onError={() => setError('Не удалось загрузить это YouTube-видео.')}
-                onPlay={() => emitSync('video:play', playerRef.current?.getCurrentTime() ?? 0)}
-                onPause={() => emitSync('video:pause', playerRef.current?.getCurrentTime() ?? 0)}
-                onSeek={(seconds) => {
-                  if (isRemoteSync.current) {
-                    isRemoteSync.current = false;
-                    return;
-                  }
-                  socketRef.current?.emit('video:seek', { roomId, time: seconds });
-                }}
-              />
-            ) : video?.source === 'vk' ? (
-              <iframe
-                key={vkEmbedUrl}
-                src={vkEmbedUrl}
-                className="w-full h-full border-0"
-                allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-                allowFullScreen
-                onError={() => setError('Не удалось загрузить это VK-видео. Попробуйте публичную ссылку vk.com/video_ext.php.')}
-                title="VK Video"
-              />
-            ) : (
-              <div className="h-full flex items-center justify-center text-white/60">Видео пока не выбрано.</div>
-            )}
+            <div className="relative h-full">
+              {video?.source === 'youtube' ? (
+                <ReactPlayer
+                  ref={playerRef}
+                  url={video.embedUrl}
+                  controls
+                  width="100%"
+                  height="100%"
+                  onReady={() => setPlayerReady(true)}
+                  onError={() => setError('Не удалось загрузить это YouTube-видео.')}
+                  onPlay={() => emitSync('video:play', playerRef.current?.getCurrentTime() ?? 0)}
+                  onPause={() => emitSync('video:pause', playerRef.current?.getCurrentTime() ?? 0)}
+                  onSeek={(seconds) => {
+                    if (!guestSyncEnabled) return;
+                    if (isRemoteSync.current) {
+                      isRemoteSync.current = false;
+                      return;
+                    }
+                    socketRef.current?.emit('video:seek', { roomId, time: seconds });
+                  }}
+                />
+              ) : video?.source === 'vk' ? (
+                <iframe
+                  key={vkEmbedUrl}
+                  src={vkEmbedUrl}
+                  className="w-full h-full border-0"
+                  allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                  allowFullScreen
+                  onError={() => setError('Не удалось загрузить это VK-видео. Попробуйте публичную ссылку vk.com/video_ext.php.')}
+                  title="VK Video"
+                />
+              ) : (
+                <div className="h-full flex items-center justify-center text-white/60">Видео пока не выбрано.</div>
+              )}
+              {needsInteraction ? (
+                <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center gap-3 p-4 text-center">
+                  <p className="text-sm text-white/85">Нажмите, чтобы начать синхронный просмотр</p>
+                  <button onClick={activateGuestSync} className="rounded bg-accent px-4 py-2 font-semibold">
+                    Синхронизироваться и начать просмотр
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
 
           {video?.source === 'vk' ? (
