@@ -29,7 +29,7 @@ io.on('connection', (socket) => {
     if (videoUrl && !room.videoUrl) room.videoUrl = videoUrl;
     room.users.push({ id: socket.id, name });
 
-    const joinMsg = { id: crypto.randomUUID(), user: 'System', text: `${name} joined the room`, ts: Date.now(), system: true };
+    const joinMsg = { id: crypto.randomUUID(), user: 'Система', text: `Пользователь ${name} вошёл`, ts: Date.now(), system: true };
     room.messages.push(joinMsg);
 
     socket.emit('room:state', room);
@@ -50,7 +50,7 @@ io.on('connection', (socket) => {
       const room = rooms.get(roomId);
       if (!room) return;
       room.users = room.users.filter((u) => u.id !== socket.id);
-      const leaveMsg = { id: crypto.randomUUID(), user: 'System', text: `${name} left the room`, ts: Date.now(), system: true };
+      const leaveMsg = { id: crypto.randomUUID(), user: 'Система', text: `Пользователь ${name} вышел`, ts: Date.now(), system: true };
       room.messages.push(leaveMsg);
       io.to(roomId).emit('presence:update', room.users);
       io.to(roomId).emit('chat:new', leaveMsg);

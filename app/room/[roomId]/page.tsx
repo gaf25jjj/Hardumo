@@ -9,7 +9,7 @@ import { parseVideoInput } from '@/lib/video';
 type ChatMessage = { id: string; user: string; text: string; ts: number; system?: boolean };
 type PresenceUser = { id: string; name: string };
 
-const SERVER_URL = process.env.NEXT_PUBLIC_SOCKET_URL ?? 'http://localhost:4000';
+const SERVER_URL = process.env.NEXT_PUBLIC_SOCKET_URL ?? 'https://hardumo.onrender.com';
 
 export default function RoomPage() {
   const params = useParams<{ roomId: string }>();
@@ -33,7 +33,10 @@ export default function RoomPage() {
 
   useEffect(() => {
     if (!joined) return;
-    const socket = io(SERVER_URL);
+    const socket = io(SERVER_URL, {
+      transports: ['websocket'],
+      secure: true
+    });
     socketRef.current = socket;
 
     socket.emit('room:join', { roomId, name, videoUrl: videoInput });
@@ -118,9 +121,9 @@ export default function RoomPage() {
     return (
       <main className="min-h-screen flex items-center justify-center px-4">
         <div className="panel p-6 w-full max-w-md space-y-4">
-          <h2 className="text-2xl font-bold">Join Room {roomId}</h2>
-          <input value={name} onChange={(e) => setName(e.target.value)} className="w-full rounded bg-black/30 border border-white/20 px-3 py-2" placeholder="Display name" />
-          <button onClick={() => name.trim() && setJoined(true)} className="w-full rounded bg-accent py-2 font-semibold">Enter Watch Party</button>
+          <h2 className="text-2xl font-bold">Присоединиться к комнате {roomId}</h2>
+          <input value={name} onChange={(e) => setName(e.target.value)} className="w-full rounded bg-black/30 border border-white/20 px-3 py-2" placeholder="Введите имя" />
+          <button onClick={() => name.trim() && setJoined(true)} className="w-full rounded bg-accent py-2 font-semibold">Войти в комнату</button>
         </div>
       </main>
     );
@@ -131,10 +134,10 @@ export default function RoomPage() {
       <div className="max-w-7xl mx-auto grid gap-4 md:grid-cols-[1fr_360px]">
         <section className="panel p-3 md:p-4 space-y-3">
           <div className="flex flex-wrap gap-2 items-center justify-between">
-            <p className="text-sm">Room: <span className="font-bold">{roomId}</span></p>
-            <button onClick={copyInvite} className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20">Copy Invite Link</button>
+            <p className="text-sm">Комната: <span className="font-bold">{roomId}</span></p>
+            <button onClick={copyInvite} className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20">Скопировать ссылку</button>
           </div>
-          <p className="text-xs text-white/70">Source: <span className="uppercase font-semibold">{video?.source ?? 'none'}</span></p>
+          <p className="text-xs text-white/70">Источник: <span className="uppercase font-semibold">{video?.source ?? 'нет'}</span></p>
           <div className="aspect-video overflow-hidden rounded-lg bg-black">
             {video?.source === 'youtube' ? (
               <ReactPlayer
@@ -143,7 +146,7 @@ export default function RoomPage() {
                 controls
                 width="100%"
                 height="100%"
-                onError={() => setError('Could not load this YouTube video.')}
+                onError={() => setError('Не удалось загрузить это YouTube-видео.')}
                 onPlay={() => emitSync('video:play', playerRef.current?.getCurrentTime() ?? 0)}
                 onPause={() => emitSync('video:pause', playerRef.current?.getCurrentTime() ?? 0)}
                 onSeek={(seconds) => socketRef.current?.emit('video:seek', { roomId, time: seconds })}
@@ -155,33 +158,33 @@ export default function RoomPage() {
                 className="w-full h-full border-0"
                 allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
                 allowFullScreen
-                onError={() => setError('Could not load this VK video. Try a public vk.com/video_ext.php link.')}
+                onError={() => setError('Не удалось загрузить это VK-видео. Попробуйте публичную ссылку vk.com/video_ext.php.')}
                 title="VK Video"
               />
             ) : (
-              <div className="h-full flex items-center justify-center text-white/60">No video set yet.</div>
+              <div className="h-full flex items-center justify-center text-white/60">Видео пока не выбрано.</div>
             )}
           </div>
 
           {video?.source === 'vk' ? (
             <div className="rounded bg-black/30 p-3 space-y-2">
-              <p className="text-xs text-white/70">VK Sync Controls</p>
+              <p className="text-xs text-white/70">Синхронизация VK</p>
               <div className="flex gap-2">
-                <button className="rounded bg-accent px-3 py-1 text-sm" onClick={() => { setVkPlaying(true); emitSync('video:play', vkTime); }}>Play</button>
-                <button className="rounded bg-white/20 px-3 py-1 text-sm" onClick={() => { setVkPlaying(false); emitSync('video:pause', vkTime); }}>Pause</button>
+                <button className="rounded bg-accent px-3 py-1 text-sm" onClick={() => { setVkPlaying(true); emitSync('video:play', vkTime); }}>Воспроизвести</button>
+                <button className="rounded bg-white/20 px-3 py-1 text-sm" onClick={() => { setVkPlaying(false); emitSync('video:pause', vkTime); }}>Пауза</button>
               </div>
               <input type="range" min={0} max={60 * 60 * 3} value={vkTime} onChange={(e) => handleVkSeek(Number(e.target.value))} className="w-full" />
-              <p className="text-xs text-white/60">Synced position: {Math.floor(vkTime)}s</p>
+              <p className="text-xs text-white/60">Синхронизированная позиция: {Math.floor(vkTime)}с</p>
             </div>
           ) : null}
 
           {error ? <p className="text-sm text-red-400">{error}</p> : null}
-          <p className="text-xs text-white/60">Connected users: {users.length}</p>
+          <p className="text-xs text-white/60">Подключено пользователей: {users.length}</p>
         </section>
 
         <aside className="panel p-3 md:p-4 flex flex-col h-[70vh] md:h-auto">
-          <h3 className="font-semibold mb-2">Chat</h3>
-          <div className="text-xs mb-2 text-white/70">Users: {users.map((u) => u.name).join(', ') || 'None'}</div>
+          <h3 className="font-semibold mb-2">Чат</h3>
+          <div className="text-xs mb-2 text-white/70">Пользователи: {users.map((u) => u.name).join(', ') || 'Нет'}</div>
           <div className="flex-1 overflow-y-auto space-y-2 pr-1">
             {messages.map((m) => (
               <div key={m.id} className="rounded bg-black/30 p-2 text-sm">
@@ -191,8 +194,8 @@ export default function RoomPage() {
             ))}
           </div>
           <div className="mt-3 flex gap-2">
-            <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} className="flex-1 rounded bg-black/30 border border-white/20 px-3 py-2" placeholder="Type a message" />
-            <button onClick={sendChat} className="rounded bg-accent px-4">Send</button>
+            <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} className="flex-1 rounded bg-black/30 border border-white/20 px-3 py-2" placeholder="Введите сообщение" />
+            <button onClick={sendChat} className="rounded bg-accent px-4">Отправить</button>
           </div>
         </aside>
       </div>
