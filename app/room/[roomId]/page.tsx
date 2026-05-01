@@ -31,6 +31,7 @@ export default function RoomPage() {
   const [pendingPlayback, setPendingPlayback] = useState<PlaybackState | null>(null);
   const [vkTime, setVkTime] = useState(0);
   const [vkPlaying, setVkPlaying] = useState(false);
+  const [ytPlaying, setYtPlaying] = useState(false);
   const playerRef = useRef<ReactPlayer>(null);
   const socketRef = useRef<Socket | null>(null);
   const isRemoteSync = useRef(false);
@@ -85,7 +86,7 @@ export default function RoomPage() {
     socket.on('chat:new', (msg) => setMessages((prev) => [...prev, msg]));
 
     socket.on('video:play', ({ time, videoUrl }) => {
-      if (!isHostRef.current) return;
+      if (isHostRef.current) return;
       isRemoteSync.current = true;
       if (videoUrl) setVideoInput(videoUrl);
       syncToTime(time, true);
@@ -122,6 +123,7 @@ export default function RoomPage() {
   const syncToTime = (seconds: number, shouldPlay: boolean) => {
     if (video?.source === 'youtube') {
       playerRef.current?.seekTo(seconds, 'seconds');
+      setYtPlaying(shouldPlay);
       return;
     }
     // VK iframe has no direct JS API in this app, so we keep a synced timeline state.
@@ -198,15 +200,24 @@ export default function RoomPage() {
                 <ReactPlayer
                   ref={playerRef}
                   url={video.embedUrl}
-                  controls
+                  controls={isHost}
+                  playing={ytPlaying}
                   width="100%"
                   height="100%"
                   onReady={() => setPlayerReady(true)}
                   onError={() => setError('Не удалось загрузить это YouTube-видео.')}
-                  onPlay={() => emitSync('video:play', playerRef.current?.getCurrentTime() ?? 0)}
-                  onPause={() => emitSync('video:pause', playerRef.current?.getCurrentTime() ?? 0)}
+                  onPlay={() => {
+                    setYtPlaying(true);
+                    if (!isHostRef.current) return;
+                    emitSync('video:play', playerRef.current?.getCurrentTime() ?? 0);
+                  }}
+                  onPause={() => {
+                    setYtPlaying(false);
+                    if (!isHostRef.current) return;
+                    emitSync('video:pause', playerRef.current?.getCurrentTime() ?? 0);
+                  }}
                   onSeek={(seconds) => {
-                    if (isHostRef.current) return;
+                    if (!isHostRef.current) return;
                     if (isRemoteSync.current) {
                       isRemoteSync.current = false;
                       return;
