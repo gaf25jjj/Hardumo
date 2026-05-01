@@ -9,6 +9,7 @@ import { parseVideoInput } from '@/lib/video';
 type ChatMessage = { id: string; user: string; text: string; ts: number; system?: boolean };
 type PresenceUser = { id: string; name: string };
 type PlaybackState = { time: number; isPlaying: boolean; updatedAt: number };
+type PresenceState = { users: PresenceUser[]; hostId: string | null };
 
 const SERVER_URL = process.env.NEXT_PUBLIC_SOCKET_URL ?? 'https://hardumo.onrender.com';
 
@@ -24,7 +25,7 @@ export default function RoomPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [users, setUsers] = useState<PresenceUser[]>([]);
   const [error, setError] = useState('');
-  const [guestSyncEnabled, setGuestSyncEnabled] = useState(false);
+  const [isHost, setIsHost] = useState(false);
   const [needsInteraction, setNeedsInteraction] = useState(false);
   const [playerReady, setPlayerReady] = useState(false);
   const [pendingPlayback, setPendingPlayback] = useState<PlaybackState | null>(null);
@@ -35,6 +36,7 @@ export default function RoomPage() {
   const isRemoteSync = useRef(false);
   const latestVideoInputRef = useRef(videoInput);
   const vkPlayingRef = useRef(vkPlaying);
+  const isHostRef = useRef(isHost);
 
   const video = useMemo(() => parseVideoInput(videoInput), [videoInput]);
 
@@ -47,8 +49,12 @@ export default function RoomPage() {
   }, [vkPlaying]);
 
   useEffect(() => {
+    isHostRef.current = isHost;
+  }, [isHost]);
+
+  useEffect(() => {
     if (!joined) return;
-    const socket = io('https://hardumo.onrender.com', {
+    const socket = io(SERVER_URL, {
       transports: ['polling', 'websocket']
     });
     socketRef.current = socket;
@@ -56,41 +62,44 @@ export default function RoomPage() {
     socket.emit('join-room', roomId, name);
     socket.emit('room:join', { roomId, name, videoUrl: latestVideoInputRef.current });
 
-    socket.on('room:state', ({ videoUrl, users, messages, playback }) => {
+    socket.on('room:state', ({ videoUrl, users, messages, playback, hostId }: { videoUrl: string; users: PresenceUser[]; messages: ChatMessage[]; playback: PlaybackState; hostId: string | null }) => {
       if (videoUrl) setVideoInput(videoUrl);
       setUsers(users);
       setMessages(messages);
-      const amHost = users[0]?.id === socket.id;
-      if (amHost) {
-        setGuestSyncEnabled(true);
-      } else {
-        setGuestSyncEnabled(false);
-        setNeedsInteraction(true);
-      }
+      const amHost = users.some((u) => u.id === socket.id) && users.find((u) => u.id === socket.id)?.id === hostId;
+      setIsHost(Boolean(amHost));
+      setNeedsInteraction(!amHost);
       if (playback) {
         setPendingPlayback(playback);
       }
     });
 
-    socket.on('presence:update', (users) => setUsers(users));
+    socket.on('presence:update', ({ users, hostId }: PresenceState) => {
+      setUsers(users);
+      const amHost = hostId === socket.id;
+      setIsHost(amHost);
+      if (amHost) {
+        setNeedsInteraction(false);
+      }
+    });
     socket.on('chat:new', (msg) => setMessages((prev) => [...prev, msg]));
 
     socket.on('video:play', ({ time, videoUrl }) => {
-      if (!guestSyncEnabled) return;
+      if (!isHostRef.current) return;
       isRemoteSync.current = true;
       if (videoUrl) setVideoInput(videoUrl);
       syncToTime(time, true);
     });
 
     socket.on('video:pause', ({ time, videoUrl }) => {
-      if (!guestSyncEnabled) return;
+      if (isHostRef.current) return;
       isRemoteSync.current = true;
       if (videoUrl) setVideoInput(videoUrl);
       syncToTime(time, false);
     });
 
     socket.on('video:seek', ({ time }) => {
-      if (!guestSyncEnabled) return;
+      if (isHostRef.current) return;
       isRemoteSync.current = true;
       syncToTime(time, vkPlayingRef.current);
     });
@@ -101,14 +110,14 @@ export default function RoomPage() {
     return () => {
       socket.disconnect();
     };
-  }, [joined, name, roomId, guestSyncEnabled]);
+  }, [joined, name, roomId]);
 
   useEffect(() => {
-    if (!playerReady || !guestSyncEnabled || !pendingPlayback) return;
+    if (!playerReady || isHost || !pendingPlayback) return;
     isRemoteSync.current = true;
     syncToTime(pendingPlayback.time, pendingPlayback.isPlaying);
     setPendingPlayback(null);
-  }, [pendingPlayback, playerReady, guestSyncEnabled]);
+  }, [pendingPlayback, playerReady, isHost]);
 
   const syncToTime = (seconds: number, shouldPlay: boolean) => {
     if (video?.source === 'youtube') {
@@ -121,7 +130,7 @@ export default function RoomPage() {
   };
 
   const emitSync = (event: 'video:play' | 'video:pause', seconds: number) => {
-    if (!guestSyncEnabled) return;
+    if (!isHost) return;
     if (isRemoteSync.current) {
       isRemoteSync.current = false;
       return;
@@ -130,7 +139,6 @@ export default function RoomPage() {
   };
 
   const activateGuestSync = () => {
-    setGuestSyncEnabled(true);
     setNeedsInteraction(false);
     socketRef.current?.emit('room:request-playback-state');
   };
@@ -155,6 +163,7 @@ export default function RoomPage() {
 
   const handleVkSeek = (seconds: number) => {
     setVkTime(seconds);
+    if (!isHostRef.current) return;
     if (isRemoteSync.current) {
       isRemoteSync.current = false;
       return;
@@ -197,7 +206,7 @@ export default function RoomPage() {
                   onPlay={() => emitSync('video:play', playerRef.current?.getCurrentTime() ?? 0)}
                   onPause={() => emitSync('video:pause', playerRef.current?.getCurrentTime() ?? 0)}
                   onSeek={(seconds) => {
-                    if (!guestSyncEnabled) return;
+                    if (isHostRef.current) return;
                     if (isRemoteSync.current) {
                       isRemoteSync.current = false;
                       return;
@@ -231,7 +240,7 @@ export default function RoomPage() {
 
           {video?.source === 'vk' ? (
             <div className="rounded bg-black/30 p-3 space-y-2">
-              <p className="text-xs text-white/70">Синхронизация VK</p>
+              <p className="text-xs text-white/70">Синхронизация VK {isHost ? '(Вы управляете комнатой)' : '(Управляет создатель комнаты)'}</p>
               <div className="flex gap-2">
                 <button className="rounded bg-accent px-3 py-1 text-sm" onClick={() => { setVkPlaying(true); emitSync('video:play', vkTime); }}>Воспроизвести</button>
                 <button className="rounded bg-white/20 px-3 py-1 text-sm" onClick={() => { setVkPlaying(false); emitSync('video:pause', vkTime); }}>Пауза</button>

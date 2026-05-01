@@ -6,7 +6,7 @@ import { Server } from 'socket.io';
 type ChatMessage = { id: string; user: string; text: string; ts: number; system?: boolean };
 type User = { id: string; name: string };
 type PlaybackState = { time: number; isPlaying: boolean; updatedAt: number };
-type RoomState = { videoUrl: string; users: User[]; messages: ChatMessage[]; playback: PlaybackState };
+type RoomState = { videoUrl: string; users: User[]; messages: ChatMessage[]; playback: PlaybackState; hostId: string | null };
 
 const app = express();
 app.use(cors({ origin: '*' }));
@@ -19,7 +19,15 @@ const io = new Server(server, {
 const rooms = new Map<string, RoomState>();
 
 const ensureRoom = (roomId: string): RoomState => {
-  if (!rooms.has(roomId)) rooms.set(roomId, { videoUrl: '', users: [], messages: [], playback: { time: 0, isPlaying: false, updatedAt: Date.now() } });
+  if (!rooms.has(roomId)) {
+    rooms.set(roomId, {
+      videoUrl: '',
+      users: [],
+      messages: [],
+      playback: { time: 0, isPlaying: false, updatedAt: Date.now() },
+      hostId: null
+    });
+  }
   return rooms.get(roomId)!;
 };
 
@@ -32,20 +40,24 @@ const resolvePlaybackState = (room: RoomState): PlaybackState => {
   };
 };
 
+const emitRoomState = (roomId: string, room: RoomState) => {
+  io.to(roomId).emit('presence:update', { users: room.users, hostId: room.hostId });
+};
+
 io.on('connection', (socket) => {
   console.log(`[socket] connected id=${socket.id}`);
-
-  socket.on('join-room', (roomId: string, username: string) => {
-    console.log(`[socket] join-room event id=${socket.id} room=${roomId} user=${username}`);
-    socket.join(roomId);
-  });
 
   socket.on('room:join', ({ roomId, name, videoUrl }) => {
     console.log(`[socket] room:join id=${socket.id} room=${roomId} user=${name}`);
     socket.join(roomId);
     const room = ensureRoom(roomId);
     if (videoUrl && !room.videoUrl) room.videoUrl = videoUrl;
-    room.users.push({ id: socket.id, name });
+
+    const existing = room.users.find((u) => u.id === socket.id);
+    if (!existing) {
+      room.users.push({ id: socket.id, name });
+    }
+    if (!room.hostId) room.hostId = socket.id;
 
     const joinMsg = { id: crypto.randomUUID(), user: 'Система', text: `Пользователь ${name} вошёл`, ts: Date.now(), system: true };
     room.messages.push(joinMsg);
@@ -54,21 +66,23 @@ io.on('connection', (socket) => {
       ...room,
       playback: resolvePlaybackState(room)
     });
-    io.to(roomId).emit('presence:update', room.users);
+    emitRoomState(roomId, room);
     io.to(roomId).emit('chat:new', joinMsg);
 
     socket.on('video:play', (payload) => {
-      console.log(`[socket] video:play room=${roomId} by=${name} time=${payload?.time ?? 'n/a'}`);
+      if (room.hostId !== socket.id) return;
       room.playback = { time: Number(payload?.time ?? 0), isPlaying: true, updatedAt: Date.now() };
       socket.to(roomId).emit('video:play', payload);
     });
+
     socket.on('video:pause', (payload) => {
-      console.log(`[socket] video:pause room=${roomId} by=${name} time=${payload?.time ?? 'n/a'}`);
+      if (room.hostId !== socket.id) return;
       room.playback = { time: Number(payload?.time ?? 0), isPlaying: false, updatedAt: Date.now() };
       socket.to(roomId).emit('video:pause', payload);
     });
+
     socket.on('video:seek', (payload) => {
-      console.log(`[socket] video:seek room=${roomId} by=${name} time=${payload?.time ?? 'n/a'}`);
+      if (room.hostId !== socket.id) return;
       room.playback = { time: Number(payload?.time ?? 0), isPlaying: room.playback.isPlaying, updatedAt: Date.now() };
       socket.to(roomId).emit('video:seek', payload);
     });
@@ -84,15 +98,21 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
-      console.log(`[socket] disconnect id=${socket.id} room=${roomId} user=${name}`);
-      const room = rooms.get(roomId);
-      if (!room) return;
-      room.users = room.users.filter((u) => u.id !== socket.id);
+      const currentRoom = rooms.get(roomId);
+      if (!currentRoom) return;
+
+      currentRoom.users = currentRoom.users.filter((u) => u.id !== socket.id);
+      if (currentRoom.hostId === socket.id) {
+        currentRoom.hostId = currentRoom.users[0]?.id ?? null;
+      }
+
       const leaveMsg = { id: crypto.randomUUID(), user: 'Система', text: `Пользователь ${name} вышел`, ts: Date.now(), system: true };
-      room.messages.push(leaveMsg);
-      io.to(roomId).emit('presence:update', room.users);
+      currentRoom.messages.push(leaveMsg);
+
+      emitRoomState(roomId, currentRoom);
       io.to(roomId).emit('chat:new', leaveMsg);
-      if (!room.users.length) rooms.delete(roomId);
+
+      if (!currentRoom.users.length) rooms.delete(roomId);
     });
   });
 });
