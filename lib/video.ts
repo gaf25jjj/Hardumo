@@ -1,4 +1,4 @@
-export type VideoSource = 'youtube' | 'vk';
+export type VideoSource = 'youtube' | 'vk' | 'direct';
 
 export type ParsedVideo = {
   source: VideoSource;
@@ -18,6 +18,9 @@ export function parseVideoInput(input: string): ParsedVideo | null {
 
   const vk = parseVk(trimmed);
   if (vk) return vk;
+
+  const direct = parseDirect(trimmed);
+  if (direct) return direct;
 
   return null;
 }
@@ -78,6 +81,23 @@ function parseVk(input: string): ParsedVideo | null {
       : `${VK_EMBED_BASE}?oid=${encodeURIComponent(oid)}&id=${encodeURIComponent(id)}`;
 
     return { source: 'vk', videoId: `${oid}_${id}`, watchUrl: input, embedUrl };
+  } catch {
+    return null;
+  }
+}
+
+function parseDirect(input: string): ParsedVideo | null {
+  try {
+    const url = new URL(input);
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    const path = url.pathname.toLowerCase();
+    if (!path.endsWith('.mp4') && !path.endsWith('.m3u8')) return null;
+    return {
+      source: 'direct',
+      videoId: url.href,
+      watchUrl: url.href,
+      embedUrl: url.href
+    };
   } catch {
     return null;
   }
