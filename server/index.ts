@@ -70,6 +70,17 @@ io.on('connection', (socket) => {
       socket.emit('room:playback-state', resolvePlaybackState(room));
     });
 
+
+    socket.on('chat:send', ({ text }: { roomId?: string; text?: string }) => {
+      const normalizedText = (text ?? '').trim();
+      if (!normalizedText) return;
+      const sender = room.users.find((u) => u.id === socket.id);
+      if (!sender) return;
+      const message: ChatMessage = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, user: sender.name, text: normalizedText, ts: Date.now() };
+      room.messages.push(message);
+      io.to(roomId).emit('chat:new', message);
+    });
+
     socket.on('disconnect', () => {
       const currentRoom = rooms.get(roomId);
       if (!currentRoom) return;
