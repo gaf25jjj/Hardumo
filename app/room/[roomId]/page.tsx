@@ -23,6 +23,7 @@ export default function RoomPage() {
   const [vkSyncAvailable, setVkSyncAvailable] = useState(false);
   const [playerReady, setPlayerReady] = useState(false);
   const [pendingPlayback, setPendingPlayback] = useState<PlaybackState | null>(null);
+  const [guestSyncEnabled, setGuestSyncEnabled] = useState(false);
   const [ytPlaying, setYtPlaying] = useState(false);
   const [directPlaying, setDirectPlaying] = useState(false);
   const [directTime, setDirectTime] = useState(0);
@@ -37,6 +38,10 @@ export default function RoomPage() {
 
   useEffect(() => { isHostRef.current = isHost; }, [isHost]);
 
+
+  useEffect(() => {
+    if (isHost) setGuestSyncEnabled(true);
+  }, [isHost]);
   useEffect(() => {
     if (!joined) return;
     const socket = io(SERVER_URL, { transports: ['polling', 'websocket'] });
@@ -50,10 +55,16 @@ export default function RoomPage() {
       setPendingPlayback(playback);
     });
     socket.on('presence:update', ({ users, hostId }) => { setUsers(users); setIsHost(hostId === socket.id); });
-    socket.on('room:video-updated', ({ videoUrl, playback }) => { setVideoInput(videoUrl); setPendingPlayback(playback); });
+    socket.on('room:video-updated', ({ videoUrl, playback }) => {
+      setVideoInput(videoUrl);
+      setPlayerReady(false);
+      if (!isHostRef.current) setGuestSyncEnabled(false);
+      setPendingPlayback(playback);
+    });
     socket.on('video:play', ({ time }) => applySync(time, true));
     socket.on('video:pause', ({ time }) => applySync(time, false));
     socket.on('video:seek', ({ time }) => applySync(time, currentPlaying()));
+    socket.on('room:playback-state', (state: PlaybackState) => setPendingPlayback(state));
     socket.on('video:heartbeat', (state: PlaybackState) => {
       if (isHostRef.current) return;
       const diff = Math.abs(currentTime() - state.time);
@@ -71,10 +82,12 @@ export default function RoomPage() {
   }, [isHost, video?.source]);
 
   useEffect(() => {
-    if (!pendingPlayback || isHost || !playerReady) return;
+    if (!pendingPlayback || isHost || !guestSyncEnabled) return;
+    if (!playerReady) return;
+    if (video?.source === 'direct' && !directRef.current?.readyState) return;
     applySync(pendingPlayback.time, pendingPlayback.isPlaying);
     setPendingPlayback(null);
-  }, [pendingPlayback, isHost, playerReady]);
+  }, [pendingPlayback, isHost, guestSyncEnabled, playerReady, video?.source]);
 
   const currentTime = () => video?.source === 'youtube' ? playerRef.current?.getCurrentTime() ?? 0 : video?.source === 'direct' ? directRef.current?.currentTime ?? 0 : vkFallbackTime;
   const currentPlaying = () => video?.source === 'youtube' ? ytPlaying : video?.source === 'direct' ? directPlaying : false;
@@ -113,8 +126,9 @@ export default function RoomPage() {
   return <main className='min-h-screen p-4 space-y-3'>
     <div className='panel p-3 flex gap-2 flex-wrap'>
       <button className='rounded bg-white/15 px-3 py-1' onClick={() => setVkBrowserMode((v) => !v)}>VK Browser mode</button>
-      <input value={videoInput} onChange={(e) => setVideoInput(e.target.value)} className='flex-1 min-w-56 rounded bg-black/30 px-3 py-1' placeholder='URL видео' />
+      <input value={videoInput} disabled={!isHost} onChange={(e) => { if (isHost) setVideoInput(e.target.value); }} className='flex-1 min-w-56 rounded bg-black/30 px-3 py-1 disabled:opacity-60' placeholder='URL видео' />
       {isHost ? <button className='rounded bg-accent px-3 py-1' onClick={() => socketRef.current?.emit('room:update-video', { roomId, videoUrl: videoInput })}>Обновить комнату</button> : null}
+      {!isHost ? <span className='text-xs text-white/60'>Видео выбирает создатель комнаты.</span> : null}
       <span className='text-xs text-white/70'>Участники: {users.length}</span>
     </div>
 
@@ -123,16 +137,27 @@ export default function RoomPage() {
       <input value={vkBrowserUrl} onChange={(e) => onVkUrlChange(e.target.value)} className='w-full rounded bg-black/30 px-3 py-2' />
       <iframe src={vkBrowserUrl} className='w-full h-[60vh] rounded' title='VK Browser' />
       <p className='text-xs text-white/70'>Если JS-инъекция к video недоступна, fallback: URL + timestamp + кнопка синхронизации.</p>
-      {!vkSyncAvailable ? <button className='rounded bg-white/20 px-3 py-1' onClick={() => socketRef.current?.emit('room:request-playback-state')}>Синхронизироваться</button> : null}
+      {!vkSyncAvailable ? <button className='rounded bg-white/20 px-3 py-1' onClick={() => socketRef.current?.emit('room:request-playback-state', { roomId })}>Синхронизироваться</button> : null}
     </div> : null}
 
-    <div className='aspect-video bg-black rounded overflow-hidden'>
+    <div className='aspect-video bg-black rounded overflow-hidden relative'>
       {video?.source === 'youtube' ? <ReactPlayer ref={playerRef} url={video.embedUrl} width='100%' height='100%' controls={isHost} playing={ytPlaying}
         onReady={() => setPlayerReady(true)}
         onPlay={() => { setYtPlaying(true); emitControl('video:play', currentTime()); }}
         onPause={() => { setYtPlaying(false); emitControl('video:pause', currentTime()); }}
         onSeek={(s) => emitControl('video:seek', s)}
       /> : video?.source === 'direct' ? <video ref={directRef} src={video.embedUrl} controls={isHost} className='w-full h-full' onLoadedData={() => setPlayerReady(true)} onTimeUpdate={() => setDirectTime(directRef.current?.currentTime ?? 0)} onPlay={() => { setDirectPlaying(true); emitControl('video:play', currentTime()); }} onPause={() => { setDirectPlaying(false); emitControl('video:pause', currentTime()); }} onSeeked={() => emitControl('video:seek', currentTime())} /> : video?.source === 'vk' ? <iframe src={video.watchUrl} className='w-full h-full border-0' allow='autoplay; fullscreen' /> : <div className='h-full grid place-items-center'>Выберите видео</div>}
+      {!isHost && !guestSyncEnabled ? <div className='absolute inset-0 z-10 flex items-center justify-center bg-black/70'>
+        <button
+          className='rounded bg-accent px-4 py-2 text-sm font-medium'
+          onClick={() => {
+            setGuestSyncEnabled(true);
+            socketRef.current?.emit('room:request-playback-state', { roomId });
+          }}
+        >
+          Синхронизироваться и начать просмотр
+        </button>
+      </div> : null}
     </div>
     <p className='text-xs text-white/70'>Fallback VK time: {Math.floor(vkFallbackTime)}s • Direct time: {Math.floor(directTime)}s</p>
   </main>;
