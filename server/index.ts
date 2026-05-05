@@ -66,7 +66,9 @@ io.on('connection', (socket) => {
       socket.to(roomId).emit('video:heartbeat', room.playback);
     });
 
-    socket.on('room:request-playback-state', () => socket.emit('room:playback-state', resolvePlaybackState(room)));
+    socket.on('room:request-playback-state', (_payload?: { roomId?: string }) => {
+      socket.emit('room:playback-state', resolvePlaybackState(room));
+    });
 
     socket.on('disconnect', () => {
       const currentRoom = rooms.get(roomId);
