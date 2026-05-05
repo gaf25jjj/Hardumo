@@ -1,0 +1,10 @@
+import { Socket } from 'socket.io-client';
+import { PlaybackState, VideoAdapter } from './types';
+
+type Opts={socket:Socket;roomId:string;adapter:VideoAdapter;isHostRef:{current:boolean};playerReadyRef:{current:boolean};userActivatedSyncRef:{current:boolean};pendingRemoteStateRef:{current:PlaybackState|null};applyingRemoteStateRef:{current:boolean};lastServerStateRef:{current:PlaybackState|null};lastSeqRef:{current:number};setShowGuestOverlay:(v:boolean)=>void;setSyncStatus:(v:string)=>void;};
+export class PlayerSyncController{ constructor(private o:Opts){}
+getResolvedTargetTime(state:PlaybackState){ if(!state.isPlaying) return state.position; return state.position+(Date.now()-state.updatedAt)/1000; }
+queueOrApplyRemoteState=(state:PlaybackState)=>{ this.o.lastServerStateRef.current=state; if(state.seq && state.seq<=this.o.lastSeqRef.current) return; if(state.seq) this.o.lastSeqRef.current=state.seq; if(!this.o.playerReadyRef.current){ this.o.pendingRemoteStateRef.current=state; console.log('[SYNC] queued remote state because player is not ready', state); return;} if(!this.o.isHostRef.current && !this.o.userActivatedSyncRef.current){ this.o.pendingRemoteStateRef.current=state; this.o.setShowGuestOverlay(true); console.log('[SYNC] queued remote state because guest has not activated sync', state); return;} this.applyRemoteState(state); }
+applyPendingRemoteState=()=>{ const s=this.o.pendingRemoteStateRef.current; if(!s) return; this.o.pendingRemoteStateRef.current=null; this.queueOrApplyRemoteState(s); }
+applyRemoteState=async(state:PlaybackState)=>{ const target=this.getResolvedTargetTime(state); console.log('[SYNC] applying remote state',{targetTime:target,isPlaying:state.isPlaying,seq:state.seq}); this.o.applyingRemoteStateRef.current=true; try{ await this.o.adapter.seekTo(target); state.isPlaying?await this.o.adapter.play():await this.o.adapter.pause(); this.o.setSyncStatus('Синхронизировано'); }catch(err){ console.error('[SYNC] failed to apply remote state',err); this.o.setSyncStatus('Ошибка синхронизации'); } setTimeout(()=>{this.o.applyingRemoteStateRef.current=false;},700); }
+}
