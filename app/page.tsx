@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { parseVideoInput } from '@/lib/video';
+import { parseVideoUrl } from '@/lib/video';
 import { generateRoomId } from '@/lib/room';
 
 export default function HomePage() {
@@ -12,13 +12,13 @@ export default function HomePage() {
   const router = useRouter();
 
   const createRoom = () => {
-    const parsed = parseVideoInput(videoUrl);
+    const parsed = parseVideoUrl(videoUrl);
     if (!parsed) {
       setError('Пожалуйста, введите корректную ссылку на YouTube или VK видео.');
       return;
     }
     const roomId = generateRoomId();
-    router.push(`/room/${roomId}?video=${encodeURIComponent(parsed.watchUrl)}`);
+    router.push(`/room/${roomId}?video=${encodeURIComponent(parsed.originalUrl)}`);
   };
 
   return (
@@ -32,7 +32,7 @@ export default function HomePage() {
           <input
             value={videoUrl}
             onChange={(e) => setVideoUrl(e.target.value)}
-            placeholder="Вставьте ссылку на видео"
+            placeholder="Вставьте ссылку YouTube или VK Видео"
             className="w-full rounded-lg bg-black/30 border border-white/15 px-4 py-3 outline-none focus:border-accent"
           />
           <button onClick={createRoom} className="w-full rounded-lg bg-accent py-3 font-semibold hover:opacity-90">
