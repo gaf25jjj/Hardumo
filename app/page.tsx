@@ -36,7 +36,7 @@ export default function HomePage() {
             className="w-full rounded-lg bg-black/30 border border-white/15 px-4 py-3 outline-none focus:border-accent"
           />
           <button onClick={createRoom} className="w-full rounded-lg bg-accent py-3 font-semibold hover:opacity-90">
-            Создать комнату
+            Создать комнату и пригласить друзей
           </button>
         </div>
 
