@@ -1,7 +1,6 @@
-import { Socket } from 'socket.io-client';
 import { PlaybackState, VideoAdapter } from './types';
 
-type Opts={socket:Socket;roomId:string;adapter:VideoAdapter;isHostRef:{current:boolean};playerReadyRef:{current:boolean};userActivatedSyncRef:{current:boolean};pendingRemoteStateRef:{current:PlaybackState|null};applyingRemoteStateRef:{current:boolean};lastServerStateRef:{current:PlaybackState|null};lastSeqRef:{current:number};setShowGuestOverlay:(v:boolean)=>void;setSyncStatus:(v:string)=>void;};
+type Opts={roomId:string;adapter:VideoAdapter;isHostRef:{current:boolean};playerReadyRef:{current:boolean};userActivatedSyncRef:{current:boolean};pendingRemoteStateRef:{current:PlaybackState|null};applyingRemoteStateRef:{current:boolean};lastServerStateRef:{current:PlaybackState|null};lastSeqRef:{current:number};setShowGuestOverlay:(v:boolean)=>void;setSyncStatus:(v:string)=>void;};
 export class PlayerSyncController{ constructor(private o:Opts){}
 getResolvedTargetTime(state:PlaybackState){ if(!state.isPlaying) return state.position; return state.position+(Date.now()-state.updatedAt)/1000; }
 queueOrApplyRemoteState=(state:PlaybackState)=>{ this.o.lastServerStateRef.current=state; if(state.seq && state.seq<=this.o.lastSeqRef.current) return; if(state.seq) this.o.lastSeqRef.current=state.seq; if(!this.o.playerReadyRef.current){ this.o.pendingRemoteStateRef.current=state; console.log('[SYNC] queued remote state because player is not ready', state); return;} if(!this.o.isHostRef.current && !this.o.userActivatedSyncRef.current){ this.o.pendingRemoteStateRef.current=state; this.o.setShowGuestOverlay(true); console.log('[SYNC] queued remote state because guest has not activated sync', state); return;} this.applyRemoteState(state); }
