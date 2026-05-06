@@ -24,6 +24,7 @@ export class VkVideoAdapter implements VideoAdapter {
   private hasNativeTimeApi = false;
   private hasNativeControlApi = false;
   private hasNativeEvents = false;
+  private messageListener: ((event: MessageEvent) => void) | null = null;
 
   async load(container: HTMLElement, video: NormalizedVideo) {
     container.innerHTML = '';
@@ -51,6 +52,7 @@ export class VkVideoAdapter implements VideoAdapter {
     console.log('[VK] available keys', Object.keys(this.player ?? {}));
     this.detectCapabilities();
     this.bindVkEvents();
+    this.bindWindowMessages();
 
     if (!this.hasNativeEvents || !this.hasNativeTimeApi) {
       this.enableFallback();
@@ -162,6 +164,40 @@ export class VkVideoAdapter implements VideoAdapter {
     });
   }
 
+  private bindWindowMessages() {
+    if (!this.iframe || this.messageListener) return;
+    this.messageListener = (event: MessageEvent) => {
+      if (!event.origin.includes('vk.com')) return;
+      const data = typeof event.data === 'string' ? event.data : JSON.stringify(event.data ?? {});
+      const lc = data.toLowerCase();
+
+      if (lc.includes('pause')) {
+        this.lastKnownTime = this.getSyntheticTime();
+        this.syntheticPlaying = false;
+        this.syntheticBaseTime = this.lastKnownTime;
+        this.stateCb?.('paused');
+      }
+
+      if (lc.includes('play')) {
+        this.syntheticPlaying = true;
+        this.syntheticBaseTime = this.lastKnownTime;
+        this.syntheticStartedAt = Date.now();
+        this.stateCb?.('playing');
+      }
+
+      const timeMatch = data.match(/"(?:time|currentTime|position)"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
+      if (timeMatch) {
+        const parsed = Number(timeMatch[1]);
+        if (Number.isFinite(parsed)) {
+          this.lastKnownTime = parsed;
+          this.syntheticBaseTime = parsed;
+          if (this.syntheticPlaying) this.syntheticStartedAt = Date.now();
+        }
+      }
+    };
+    window.addEventListener('message', this.messageListener);
+  }
+
   private extractTimeFromPayload(payload: any): number {
     if (typeof payload === 'number') return payload;
     if (payload && typeof payload.time === 'number') return payload.time;
@@ -261,6 +297,10 @@ export class VkVideoAdapter implements VideoAdapter {
   }
 
   destroy() {
+    if (this.messageListener) {
+      window.removeEventListener('message', this.messageListener);
+      this.messageListener = null;
+    }
     this.iframe?.remove();
     this.player = null;
   }

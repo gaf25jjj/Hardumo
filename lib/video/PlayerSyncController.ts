@@ -1,5 +1,7 @@
 import { PlaybackState, VideoAdapter } from './types';
 
+const SEEK_THRESHOLD_SECONDS = 1.5;
+
 type Opts = {
   roomId: string;
   adapter: VideoAdapter;
@@ -55,7 +57,10 @@ export class PlayerSyncController {
     }
     this.o.applyingRemoteStateRef.current = true;
     try {
-      await this.o.adapter.seekTo(target);
+      const currentTime = await this.o.adapter.getCurrentTime();
+      if (Math.abs(currentTime - target) > SEEK_THRESHOLD_SECONDS) {
+        await this.o.adapter.seekTo(target);
+      }
       state.isPlaying ? await this.o.adapter.play() : await this.o.adapter.pause();
       this.o.setSyncStatus('Синхронизировано');
     } catch (err) {
