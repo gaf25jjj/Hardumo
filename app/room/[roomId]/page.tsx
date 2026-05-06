@@ -43,6 +43,8 @@ export default function RoomPage() {
   const [showGuestOverlay, setShowGuestOverlay] = useState(false);
   const [overlayMessage, setOverlayMessage] = useState('Синхронизироваться и начать просмотр');
   const [syncStatus, setSyncStatus] = useState('Ожидание синхронизации');
+  const [vkDebugTime, setVkDebugTime] = useState(0);
+  const [vkSyncStarted, setVkSyncStarted] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -112,6 +114,10 @@ export default function RoomPage() {
       playerReadyRef.current = true;
       if (isHostRef.current) userActivatedSyncRef.current = true;
       syncRef.current?.applyPendingRemoteState();
+      if (video.provider === 'vk') {
+        const vkDebug = (adapter as any).getDebugState?.();
+        if (vkDebug?.fallbackMode) console.warn('[VK SYNC WARNING] fallback mode active');
+      }
     });
 
     adapter.onStateChange(async (state: any) => {
@@ -235,8 +241,21 @@ export default function RoomPage() {
       if (!isHostRef.current || !playerReadyRef.current || !adapterRef.current || applyingRemoteStateRef.current) return;
       const socket = socketRef.current;
       const serverState = lastServerStateRef.current;
-      if (!socket || !serverState?.isPlaying) return;
+      if (!socket) return;
+      if (video?.provider === 'youtube' && !serverState?.isPlaying) return;
       const current = await adapterRef.current.getCurrentTime();
+      if (video?.provider === 'vk') {
+        setVkDebugTime(current);
+        if (!vkSyncStarted) return;
+        const isPlaying = adapterRef.current.isPlaying?.() ?? false;
+        const now = Date.now();
+        if (now - lastHostSeekEmitAtRef.current < 1000) return;
+        if (!isPlaying && !serverState?.isPlaying) return;
+        lastHostSeekEmitAtRef.current = now;
+        socket.emit('video:control', { roomId, type: isPlaying ? 'play' : 'seek', position: current });
+        return;
+      }
+      if (!serverState) return;
       const expected = syncRef.current?.getResolvedTargetTime(serverState) ?? serverState.position;
       const diff = Math.abs(expected - current);
       if (diff <= 1.25) return;
@@ -247,7 +266,24 @@ export default function RoomPage() {
     }, 700);
 
     return () => clearInterval(interval);
-  }, [roomId]);
+  }, [roomId, video?.provider, vkSyncStarted]);
+
+  async function emitVkControl(type: 'play' | 'pause' | 'seek', position?: number) {
+    if (!isHostRef.current || video?.provider !== 'vk') return;
+    const adapter = adapterRef.current;
+    if (!adapter || !socketRef.current) return;
+
+    let current = position;
+    if (typeof current !== 'number') current = await adapter.getCurrentTime();
+    if (type === 'play') await adapter.play();
+    if (type === 'pause') await adapter.pause();
+    if (type === 'seek') await adapter.seekTo(current);
+
+    socketRef.current.emit('video:control', { roomId, type, position: current });
+    setVkSyncStarted(true);
+    if (typeof current === 'number') setVkDebugTime(current);
+    console.log('[VK HOST CONTROL]', { type, position: current });
+  }
 
   const copyRoomCode = async () => {
     await navigator.clipboard.writeText(roomId);
@@ -347,6 +383,39 @@ export default function RoomPage() {
               </div>
             ) : null}
           </div>
+          {video?.provider === 'vk' && isHost ? (
+            <div className="panel p-3 space-y-2">
+              <div className="flex flex-wrap gap-2">
+                <button className="rounded bg-accent px-3 py-2 text-sm" onClick={() => emitVkControl('play')}>VK Play Sync</button>
+                <button className="rounded bg-white/15 px-3 py-2 text-sm" onClick={() => emitVkControl('pause')}>VK Pause Sync</button>
+                <button className="rounded bg-white/15 px-3 py-2 text-sm" onClick={async () => {
+                  const current = await adapterRef.current?.getCurrentTime();
+                  if (typeof current === 'number') await emitVkControl('seek', Math.max(0, current - 10));
+                }}>-10 сек</button>
+                <button className="rounded bg-white/15 px-3 py-2 text-sm" onClick={async () => {
+                  const current = await adapterRef.current?.getCurrentTime();
+                  if (typeof current === 'number') await emitVkControl('seek', current + 10);
+                }}>+10 сек</button>
+                <button className="rounded bg-white/15 px-3 py-2 text-sm" onClick={async () => {
+                  const adapter = adapterRef.current;
+                  if (!adapter || !socketRef.current) return;
+                  const current = await adapter.getCurrentTime();
+                  const isPlaying = adapter.isPlaying?.() ?? false;
+                  socketRef.current.emit('video:control', { roomId, type: isPlaying ? 'play' : 'seek', position: current });
+                  setVkSyncStarted(true);
+                  setVkDebugTime(current);
+                  console.log('[VK HOST CONTROL]', { type: isPlaying ? 'play' : 'seek', position: current });
+                }}>Синхронизировать гостей</button>
+              </div>
+              <p className="text-xs text-white/60">VK sync experimental</p>
+              <p className="text-[11px] text-white/50">
+                VK API: {adapterRef.current?.isFallback?.() ? 'fallback' : 'ready'} · native controls: {adapterRef.current?.hasNativeControls?.() ? 'available' : 'limited'} · events: {adapterRef.current?.hasNativeEventsApi?.() ? 'available' : 'not detected'} · time: {vkDebugTime.toFixed(1)}s
+              </p>
+            </div>
+          ) : null}
+          {video?.provider === 'vk' && !isHost && playerReadyRef.current && !adapterRef.current?.hasNativeControls?.() ? (
+            <p className="text-xs text-yellow-300">VK Видео ограничивает управление iframe. Используйте кнопки VK Sync у создателя комнаты.</p>
+          ) : null}
 
           <div className="panel p-3 space-y-2 lg:hidden">
             <p className="text-sm text-white/70">Код комнаты: <span className="font-mono text-white">{roomId}</span></p>
