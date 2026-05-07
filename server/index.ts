@@ -15,9 +15,15 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*', methods: ['GET', 'POST'] } });
 const rooms = new Map<string, Room>();
 
+function safePosition(position: unknown): number {
+  const n = Number(position);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(n, 86400);
+}
+
 function resolvePlaybackState(playback: PlaybackState): PlaybackState {
   if (!playback.isPlaying) return playback;
-  return { ...playback, position: playback.position + (Date.now() - playback.updatedAt) / 1000, updatedAt: Date.now() };
+  return { ...playback, position: safePosition(playback.position + (Date.now() - playback.updatedAt) / 1000), updatedAt: Date.now() };
 }
 
 const getRoom = (roomId: string): Room => {
@@ -41,10 +47,12 @@ io.on('connection', (socket) => {
   socket.on('room:join', ({ roomId, name, provider, videoId, embedUrl }) => {
     const room = getRoom(roomId);
     socket.join(roomId);
+    socket.data.roomId = roomId;
 
     if (!room.hostSocketId) room.hostSocketId = socket.id;
 
     const normalizedName = typeof name === 'string' && name.trim() ? name.trim() : 'Гость';
+    socket.data.name = normalizedName;
     const existing = room.users.find((u) => u.id === socket.id);
     if (!existing) {
       room.users.push({ id: socket.id, name: normalizedName });
@@ -60,7 +68,7 @@ io.on('connection', (socket) => {
       io.to(roomId).emit('chat:new', joinMessage);
     }
 
-    if (videoId && !room.playback.videoId) room.playback = { ...room.playback, provider: provider ?? 'youtube', videoId, embedUrl };
+    if (videoId && !room.playback.videoId) room.playback = { ...room.playback, provider: provider ?? 'youtube', videoId, embedUrl, updatedAt: Date.now() };
 
     socket.emit('room:state', {
       roomId,
@@ -78,7 +86,7 @@ io.on('connection', (socket) => {
         return;
       }
       room.playback = { provider, videoId, embedUrl, isPlaying: false, position: 0, updatedAt: Date.now(), seq: room.playback.seq + 1 };
-      io.to(roomId).emit('room:playback-state', resolvePlaybackState(room.playback));
+      socket.to(roomId).emit('room:playback-state', resolvePlaybackState(room.playback));
     });
 
     socket.on('video:control', ({ roomId: rid, type, position }: { roomId: string; type: 'play' | 'pause' | 'seek'; position: number }) => {
@@ -88,10 +96,19 @@ io.on('connection', (socket) => {
         socket.emit('control:denied', { reason: 'Only the room creator can control playback' });
         return;
       }
-      if (type === 'play') current.playback = { ...current.playback, isPlaying: true, position, updatedAt: Date.now(), seq: current.playback.seq + 1 };
-      if (type === 'pause') current.playback = { ...current.playback, isPlaying: false, position, updatedAt: Date.now(), seq: current.playback.seq + 1 };
-      if (type === 'seek') current.playback = { ...current.playback, position, updatedAt: Date.now(), seq: current.playback.seq + 1 };
-      io.to(rid).emit('room:playback-state', resolvePlaybackState(current.playback));
+      const p = safePosition(position);
+      if (type === 'play') current.playback = { ...current.playback, isPlaying: true, position: p, updatedAt: Date.now(), seq: current.playback.seq + 1 };
+      if (type === 'pause') current.playback = { ...current.playback, isPlaying: false, position: p, updatedAt: Date.now(), seq: current.playback.seq + 1 };
+      if (type === 'seek') current.playback = { ...current.playback, position: p, updatedAt: Date.now(), seq: current.playback.seq + 1 };
+      socket.to(rid).emit('room:playback-state', resolvePlaybackState(current.playback));
+    });
+
+    socket.on('host:heartbeat', ({ roomId: rid, position, isPlaying }: { roomId: string; position: number; isPlaying: boolean }) => {
+      const current = rooms.get(rid);
+      if (!current) return;
+      if (socket.id !== current.hostSocketId) return;
+      current.playback = { ...current.playback, isPlaying: Boolean(isPlaying), position: safePosition(position), updatedAt: Date.now(), seq: current.playback.seq + 1 };
+      socket.to(rid).emit('room:sync-pulse', resolvePlaybackState(current.playback));
     });
 
     socket.on('room:request-playback-state', ({ roomId: rid }) => {
@@ -137,8 +154,8 @@ io.on('connection', (socket) => {
 });
 
 setInterval(() => {
-  for (const [roomId, room] of rooms.entries()) io.to(roomId).emit('room:sync-pulse', resolvePlaybackState(room.playback));
-}, 2000);
+  for (const [roomId, room] of rooms.entries()) io.to(roomId).except(room.hostSocketId).emit('room:sync-pulse', resolvePlaybackState(room.playback));
+}, 2500);
 
 app.get('/health', (_, res) => res.json({ ok: true }));
 server.listen(Number(process.env.SOCKET_PORT ?? 4000), () => console.log('Socket server listening'));
