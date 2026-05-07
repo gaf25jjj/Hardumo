@@ -11,6 +11,7 @@ import { PlayerSyncController } from '@/lib/video/PlayerSyncController';
 
 const SERVER_URL = process.env.NEXT_PUBLIC_SOCKET_URL ?? 'https://hardumo.onrender.com';
 const DISPLAY_NAME_KEY = 'hardumo_display_name';
+const HOST_HEARTBEAT_MS = 2500;
 
 type RoomMessage = {
   id: string;
@@ -36,7 +37,6 @@ export default function RoomPage() {
   const [chatError, setChatError] = useState('');
   const [copyStatus, setCopyStatus] = useState('');
   const [hostId, setHostId] = useState('');
-
   const [isHost, setIsHost] = useState(false);
   const [roleReady, setRoleReady] = useState(false);
   const [adapterEpoch, setAdapterEpoch] = useState(0);
@@ -44,13 +44,11 @@ export default function RoomPage() {
   const [overlayMessage, setOverlayMessage] = useState('Синхронизироваться и начать просмотр');
   const [syncStatus, setSyncStatus] = useState('Ожидание синхронизации');
   const [vkDebugTime, setVkDebugTime] = useState(0);
-  const [vkSyncStarted, setVkSyncStarted] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const adapterRef = useRef<any>(null);
   const syncRef = useRef<PlayerSyncController | null>(null);
-  const lastHostSeekEmitAtRef = useRef(0);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   const playerReadyRef = useRef(false);
@@ -60,8 +58,11 @@ export default function RoomPage() {
   const lastServerStateRef = useRef<PlaybackState | null>(null);
   const isHostRef = useRef(false);
   const lastSeqRef = useRef(0);
+  const hostPlayingRef = useRef(false);
+  const lastVideoKeyRef = useRef('');
 
   const video = useMemo(() => parseVideoUrl(videoInput), [videoInput]);
+  const videoKey = video ? `${video.provider}:${video.videoId}` : '';
   const inviteUrl = useMemo(() => {
     if (typeof window === 'undefined') return '';
     return videoInput
@@ -85,11 +86,20 @@ export default function RoomPage() {
   }, [messages]);
 
   useEffect(() => {
+    if (lastVideoKeyRef.current !== videoKey) {
+      lastSeqRef.current = 0;
+      lastVideoKeyRef.current = videoKey;
+    }
+  }, [videoKey]);
+
+  useEffect(() => {
     if (!joined || !video || !containerRef.current || !roleReady) return;
+
     playerReadyRef.current = false;
     pendingRemoteStateRef.current = null;
-    lastSeqRef.current = 0;
     applyingRemoteStateRef.current = false;
+    hostPlayingRef.current = false;
+
     if (!isHostRef.current) setShowGuestOverlay(true);
 
     adapterRef.current?.destroy?.();
@@ -112,19 +122,23 @@ export default function RoomPage() {
 
     adapter.onReady(() => {
       playerReadyRef.current = true;
-      if (isHostRef.current) userActivatedSyncRef.current = true;
+      if (isHostRef.current) {
+        userActivatedSyncRef.current = true;
+        setShowGuestOverlay(false);
+      }
       syncRef.current?.applyPendingRemoteState();
       if (video.provider === 'vk') {
-        const vkDebug = (adapter as any).getDebugState?.();
-        if (vkDebug?.fallbackMode) console.warn('[VK SYNC WARNING] fallback mode active');
+        const debug = adapter.getDebugState?.();
+        setSyncStatus(debug?.fallbackMode ? 'VK Sync: fallback clock' : 'VK Sync: ready');
       }
     });
 
     adapter.onStateChange(async (state: any) => {
       if (applyingRemoteStateRef.current || !isHostRef.current) return;
-      const t = await adapter.getCurrentTime();
-      if (state === 'playing') socketRef.current?.emit('video:control', { roomId, type: 'play', position: t });
-      if (state === 'paused' || state === 'ended') socketRef.current?.emit('video:control', { roomId, type: 'pause', position: t });
+      const current = await adapter.getCurrentTime();
+      hostPlayingRef.current = state === 'playing';
+      if (state === 'playing') socketRef.current?.emit('video:control', { roomId, type: 'play', position: current });
+      if (state === 'paused' || state === 'ended') socketRef.current?.emit('video:control', { roomId, type: 'pause', position: current });
     });
 
     adapter.onAutoplayBlocked?.(() => {
@@ -154,14 +168,16 @@ export default function RoomPage() {
       isHostRef.current = state.isHost;
       setIsHost(state.isHost);
       setRoleReady(true);
+
       if (state.isHost) {
         userActivatedSyncRef.current = true;
         setShowGuestOverlay(false);
+        if (state.playback) lastServerStateRef.current = state.playback;
       } else {
         userActivatedSyncRef.current = false;
         setShowGuestOverlay(true);
+        if (state.playback) syncRef.current?.queueOrApplyRemoteState(state.playback);
       }
-      if (state.playback) syncRef.current?.queueOrApplyRemoteState(state.playback);
     });
 
     socket.on('presence:update', ({ users, hostId }) => {
@@ -172,22 +188,26 @@ export default function RoomPage() {
       setIsHost(host);
       isHostRef.current = host;
       if (host !== prevHost) {
-        if (host) {
-          userActivatedSyncRef.current = true;
-          setShowGuestOverlay(false);
-        } else {
-          userActivatedSyncRef.current = false;
-          setShowGuestOverlay(true);
-        }
-        if (video?.provider === 'youtube') setAdapterEpoch((v) => v + 1);
+        userActivatedSyncRef.current = host;
+        setShowGuestOverlay(!host);
+        setAdapterEpoch((v) => v + 1);
       }
     });
 
     socket.on('chat:new', (m) => setMessages((p) => [...p, m]));
-    socket.on('room:playback-state', (playback) => syncRef.current?.queueOrApplyRemoteState(playback));
+
+    socket.on('room:playback-state', (playback) => {
+      lastServerStateRef.current = playback;
+      if (isHostRef.current) return;
+      syncRef.current?.queueOrApplyRemoteState(playback);
+    });
+
     socket.on('room:sync-pulse', (playback) => {
       lastServerStateRef.current = playback;
+      if (isHostRef.current || !userActivatedSyncRef.current) return;
+      syncRef.current?.queueOrApplyRemoteState(playback);
     });
+
     socket.on('control:denied', () => setSyncStatus('Только создатель комнаты может управлять видео'));
 
     return () => {
@@ -205,31 +225,34 @@ export default function RoomPage() {
     const interval = setInterval(async () => {
       if (isHostRef.current || !playerReadyRef.current || !userActivatedSyncRef.current || !adapterRef.current) return;
       const state = lastServerStateRef.current;
-      if (!state || !state.isPlaying) return;
+      if (!state) return;
       const target = syncRef.current?.getResolvedTargetTime(state) ?? state.position;
       const current = await adapterRef.current.getCurrentTime();
       const diff = target - current;
+
+      if (!state.isPlaying) return;
+
       if (Math.abs(diff) > 1.25) {
         applyingRemoteStateRef.current = true;
-        await adapterRef.current.seekTo(target);
+        await adapterRef.current.seekTo(Math.max(0, target));
         setTimeout(() => {
           applyingRemoteStateRef.current = false;
-        }, 700);
+        }, 900);
         return;
       }
+
       if (Math.abs(diff) > 0.35) {
         try {
           const rates = adapterRef.current.getAvailablePlaybackRates?.() || [1];
           if (diff > 0 && rates.includes(1.25)) {
             adapterRef.current.setPlaybackRate(1.25);
-            setTimeout(() => adapterRef.current?.setPlaybackRate(1), 1500);
-          }
-          if (diff < 0 && rates.includes(0.75)) {
+            setTimeout(() => adapterRef.current?.setPlaybackRate(1), 1200);
+          } else if (diff < 0 && rates.includes(0.75)) {
             adapterRef.current.setPlaybackRate(0.75);
-            setTimeout(() => adapterRef.current?.setPlaybackRate(1), 1500);
+            setTimeout(() => adapterRef.current?.setPlaybackRate(1), 1200);
           }
         } catch {
-          // no-op
+          // Provider does not support playback-rate correction.
         }
       }
     }, 1500);
@@ -238,35 +261,15 @@ export default function RoomPage() {
 
   useEffect(() => {
     const interval = setInterval(async () => {
-      if (!isHostRef.current || !playerReadyRef.current || !adapterRef.current || applyingRemoteStateRef.current) return;
-      const socket = socketRef.current;
-      const serverState = lastServerStateRef.current;
-      if (!socket) return;
-      if (video?.provider === 'youtube' && !serverState?.isPlaying) return;
+      if (!isHostRef.current || !playerReadyRef.current || !adapterRef.current || !socketRef.current) return;
       const current = await adapterRef.current.getCurrentTime();
-      if (video?.provider === 'vk') {
-        setVkDebugTime(current);
-        if (!vkSyncStarted) return;
-        const isPlaying = adapterRef.current.isPlaying?.() ?? false;
-        const now = Date.now();
-        if (now - lastHostSeekEmitAtRef.current < 1000) return;
-        if (!isPlaying && !serverState?.isPlaying) return;
-        lastHostSeekEmitAtRef.current = now;
-        socket.emit('video:control', { roomId, type: isPlaying ? 'play' : 'seek', position: current });
-        return;
-      }
-      if (!serverState) return;
-      const expected = syncRef.current?.getResolvedTargetTime(serverState) ?? serverState.position;
-      const diff = Math.abs(expected - current);
-      if (diff <= 1.25) return;
-      const now = Date.now();
-      if (now - lastHostSeekEmitAtRef.current < 1000) return;
-      lastHostSeekEmitAtRef.current = now;
-      socket.emit('video:control', { roomId, type: 'seek', position: current });
-    }, 700);
+      const isPlaying = video?.provider === 'vk' ? Boolean(adapterRef.current.isPlaying?.()) : hostPlayingRef.current;
+      if (video?.provider === 'vk') setVkDebugTime(current);
+      socketRef.current.emit('host:heartbeat', { roomId, position: current, isPlaying });
+    }, HOST_HEARTBEAT_MS);
 
     return () => clearInterval(interval);
-  }, [roomId, video?.provider, vkSyncStarted]);
+  }, [roomId, video?.provider]);
 
   async function emitVkControl(type: 'play' | 'pause' | 'seek', position?: number) {
     if (!isHostRef.current || video?.provider !== 'vk') return;
@@ -279,10 +282,9 @@ export default function RoomPage() {
     if (type === 'pause') await adapter.pause();
     if (type === 'seek') await adapter.seekTo(current);
 
+    hostPlayingRef.current = type === 'play' ? true : type === 'pause' ? false : Boolean(adapter.isPlaying?.());
     socketRef.current.emit('video:control', { roomId, type, position: current });
-    setVkSyncStarted(true);
     if (typeof current === 'number') setVkDebugTime(current);
-    console.log('[VK HOST CONTROL]', { type, position: current });
   }
 
   const copyRoomCode = async () => {
@@ -383,6 +385,7 @@ export default function RoomPage() {
               </div>
             ) : null}
           </div>
+
           {video?.provider === 'vk' && isHost ? (
             <div className="panel p-3 space-y-2">
               <div className="flex flex-wrap gap-2">
@@ -396,25 +399,16 @@ export default function RoomPage() {
                   const current = await adapterRef.current?.getCurrentTime();
                   if (typeof current === 'number') await emitVkControl('seek', current + 10);
                 }}>+10 сек</button>
-                <button className="rounded bg-white/15 px-3 py-2 text-sm" onClick={async () => {
-                  const adapter = adapterRef.current;
-                  if (!adapter || !socketRef.current) return;
-                  const current = await adapter.getCurrentTime();
-                  const isPlaying = adapter.isPlaying?.() ?? false;
-                  socketRef.current.emit('video:control', { roomId, type: isPlaying ? 'play' : 'seek', position: current });
-                  setVkSyncStarted(true);
-                  setVkDebugTime(current);
-                  console.log('[VK HOST CONTROL]', { type: isPlaying ? 'play' : 'seek', position: current });
-                }}>Синхронизировать гостей</button>
               </div>
-              <p className="text-xs text-white/60">VK sync experimental</p>
+              <p className="text-xs text-white/60">VK Sync использует server clock + fallback-коррекцию</p>
               <p className="text-[11px] text-white/50">
                 VK API: {adapterRef.current?.isFallback?.() ? 'fallback' : 'ready'} · native controls: {adapterRef.current?.hasNativeControls?.() ? 'available' : 'limited'} · events: {adapterRef.current?.hasNativeEventsApi?.() ? 'available' : 'not detected'} · time: {vkDebugTime.toFixed(1)}s
               </p>
             </div>
           ) : null}
+
           {video?.provider === 'vk' && !isHost && playerReadyRef.current && !adapterRef.current?.hasNativeControls?.() ? (
-            <p className="text-xs text-yellow-300">VK Видео ограничивает управление iframe. Используйте кнопки VK Sync у создателя комнаты.</p>
+            <p className="text-xs text-yellow-300">VK Видео ограничивает управление iframe. Синхронизация работает через server clock и может требовать повторного нажатия overlay.</p>
           ) : null}
 
           <div className="panel p-3 space-y-2 lg:hidden">
@@ -456,9 +450,7 @@ export default function RoomPage() {
 
             <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
               {messages.map((m) => {
-                if (m.system) {
-                  return <div key={m.id} className="text-center text-xs text-white/50">{m.text}</div>;
-                }
+                if (m.system) return <div key={m.id} className="text-center text-xs text-white/50">{m.text}</div>;
                 const isMine = m.userId === socketRef.current?.id;
                 return (
                   <div key={m.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
