@@ -28,10 +28,24 @@ export class VkVideoAdapter implements VideoAdapter {
 
   async load(container: HTMLElement, video: NormalizedVideo) {
     container.innerHTML = '';
+
     this.iframe = document.createElement('iframe');
     this.iframe.src = video.embedUrl ?? video.originalUrl;
-    this.iframe.allow = 'autoplay; fullscreen';
+    this.iframe.allow = 'autoplay; fullscreen; picture-in-picture';
+    this.iframe.allowFullscreen = true;
+    this.iframe.referrerPolicy = 'origin';
+    this.iframe.setAttribute('playsinline', 'true');
     this.iframe.className = 'w-full h-full border-0';
+
+    this.iframe.onload = () => {
+      console.log('[VK] iframe loaded', this.iframe?.src);
+    };
+
+    this.iframe.onerror = () => {
+      console.error('[VK] iframe failed to load');
+      this.enableFallback();
+    };
+
     container.appendChild(this.iframe);
 
     await this.loadApi();
@@ -48,8 +62,10 @@ export class VkVideoAdapter implements VideoAdapter {
       this.enableFallback();
     }
 
+    console.log('[VK] embed url', video.embedUrl);
     console.log('[VK] player object', this.player);
     console.log('[VK] available keys', Object.keys(this.player ?? {}));
+
     this.detectCapabilities();
     this.bindVkEvents();
     this.bindWindowMessages();
@@ -63,17 +79,28 @@ export class VkVideoAdapter implements VideoAdapter {
 
   private async loadApi() {
     await new Promise<void>((resolve) => {
-      const ex = document.querySelector('script[data-vk-video-api]') as HTMLScriptElement | null;
-      if (ex) return resolve();
-      const s = document.createElement('script');
-      s.src = 'https://vk.com/js/api/videoplayer.js';
-      s.dataset.vkVideoApi = '1';
-      s.onload = () => {
+      const existing = document.querySelector('script[data-vk-video-api]') as HTMLScriptElement | null;
+
+      if (existing) {
+        resolve();
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = 'https://vk.com/js/api/videoplayer.js';
+      script.dataset.vkVideoApi = '1';
+
+      script.onload = () => {
         console.log('[VK] API script loaded');
         resolve();
       };
-      s.onerror = () => resolve();
-      document.body.appendChild(s);
+
+      script.onerror = () => {
+        console.error('[VK] API script failed to load');
+        resolve();
+      };
+
+      document.body.appendChild(script);
     });
   }
 
@@ -85,8 +112,6 @@ export class VkVideoAdapter implements VideoAdapter {
   private detectCapabilities() {
     this.hasNativeControlApi = this.hasAnyMethod(['play']) && this.hasAnyMethod(['pause']) && this.hasAnyMethod(['seek', 'seekTo', 'setCurrentTime']);
     this.hasNativeTimeApi = this.hasAnyMethod(['getCurrentTime', 'getTime', 'currentTime', 'getPosition']);
-    console.log('[VK] native control available', this.hasNativeControlApi);
-    console.log('[VK] native time available', this.hasNativeTimeApi);
   }
 
   private hasAnyMethod(methodNames: string[]) {
@@ -95,26 +120,22 @@ export class VkVideoAdapter implements VideoAdapter {
 
   private bindVkEvents() {
     if (!this.player || typeof this.player.on !== 'function') {
-      console.warn('[VK] player.on is not available');
-      console.log('[VK] native events available', false);
+      console.warn('[VK] player.on unavailable');
       return;
     }
 
     this.hasNativeEvents = true;
-    console.log('[VK] native events available', true);
 
     const on = (eventName: string, handler: (...args: any[]) => void) => {
       try {
         this.player.on(eventName, handler);
-        console.log('[VK] subscribed event', eventName);
       } catch (err) {
-        console.warn('[VK] failed to subscribe event', eventName, err);
+        console.warn('[VK] failed subscribe', eventName, err);
       }
     };
 
     ['started', 'resumed', 'play', 'playing'].forEach((event) => {
       on(event, () => {
-        console.log('[VK] playing event', event);
         this.syntheticPlaying = true;
         this.syntheticBaseTime = this.lastKnownTime;
         this.syntheticStartedAt = Date.now();
@@ -124,7 +145,6 @@ export class VkVideoAdapter implements VideoAdapter {
 
     ['paused', 'pause'].forEach((event) => {
       on(event, () => {
-        console.log('[VK] paused event', event);
         this.lastKnownTime = this.getCurrentTimeSync();
         this.syntheticPlaying = false;
         this.syntheticBaseTime = this.lastKnownTime;
@@ -134,7 +154,6 @@ export class VkVideoAdapter implements VideoAdapter {
 
     ['ended', 'finish'].forEach((event) => {
       on(event, () => {
-        console.log('[VK] ended event', event);
         this.syntheticPlaying = false;
         this.stateCb?.('ended');
       });
@@ -142,7 +161,6 @@ export class VkVideoAdapter implements VideoAdapter {
 
     ['timeupdate', 'progress', 'seek', 'seeked'].forEach((event) => {
       on(event, (payload: any) => {
-        console.log('[VK] time event', event, payload);
         const t = this.extractTimeFromPayload(payload);
         if (Number.isFinite(t)) {
           this.lastKnownTime = t;
@@ -154,20 +172,17 @@ export class VkVideoAdapter implements VideoAdapter {
 
     ['autoplaySoundProhibited', 'autoplayBlocked'].forEach((event) => {
       on(event, () => {
-        console.warn('[VK] autoplay blocked event', event);
         this.autoplayBlockedCb?.();
       });
-    });
-
-    on('error', (err: any) => {
-      console.error('[VK] player error', err);
     });
   }
 
   private bindWindowMessages() {
     if (!this.iframe || this.messageListener) return;
+
     this.messageListener = (event: MessageEvent) => {
-      if (!event.origin.includes('vk.com')) return;
+      if (!event.origin.includes('vk.com') && !event.origin.includes('vkvideo.ru')) return;
+
       const data = typeof event.data === 'string' ? event.data : JSON.stringify(event.data ?? {});
       const lc = data.toLowerCase();
 
@@ -185,7 +200,8 @@ export class VkVideoAdapter implements VideoAdapter {
         this.stateCb?.('playing');
       }
 
-      const timeMatch = data.match(/"(?:time|currentTime|position)"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
+      const timeMatch = data.match(/"(?:time|currenttime|position)"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
+
       if (timeMatch) {
         const parsed = Number(timeMatch[1]);
         if (Number.isFinite(parsed)) {
@@ -195,6 +211,7 @@ export class VkVideoAdapter implements VideoAdapter {
         }
       }
     };
+
     window.addEventListener('message', this.messageListener);
   }
 
@@ -217,16 +234,20 @@ export class VkVideoAdapter implements VideoAdapter {
         }
       }
     }
+
     return undefined;
   }
 
   private async readNativeTime() {
     const result = this.callFirstAvailable(['getCurrentTime', 'getTime', 'currentTime', 'getPosition']);
+
     if (typeof result === 'number' && Number.isFinite(result)) return result;
+
     if (result && typeof result.then === 'function') {
       const awaited = await result;
       if (typeof awaited === 'number' && Number.isFinite(awaited)) return awaited;
     }
+
     return Number.NaN;
   }
 
@@ -265,12 +286,14 @@ export class VkVideoAdapter implements VideoAdapter {
 
   async getCurrentTime() {
     const native = await this.readNativeTime();
+
     if (Number.isFinite(native)) {
       this.lastKnownTime = native;
       this.syntheticBaseTime = native;
       if (this.syntheticPlaying) this.syntheticStartedAt = Date.now();
       return native;
     }
+
     return this.getSyntheticTime();
   }
 
@@ -283,6 +306,7 @@ export class VkVideoAdapter implements VideoAdapter {
   hasNativeControls() { return this.hasNativeControlApi; }
   hasNativeEventsApi() { return this.hasNativeEvents; }
   hasNativeTime() { return this.hasNativeTimeApi; }
+
   getDebugState() {
     return {
       fallbackMode: this.fallbackMode,
@@ -301,6 +325,7 @@ export class VkVideoAdapter implements VideoAdapter {
       window.removeEventListener('message', this.messageListener);
       this.messageListener = null;
     }
+
     this.iframe?.remove();
     this.player = null;
   }
