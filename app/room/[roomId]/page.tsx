@@ -128,8 +128,9 @@ export default function RoomPage() {
       }
       syncRef.current?.applyPendingRemoteState();
       if (video.provider === 'vk') {
-        const debug = adapter.getDebugState?.();
-        setSyncStatus(debug?.fallbackMode ? 'VK Sync: fallback clock' : 'VK Sync: ready');
+        const vkAdapter = adapter as VkVideoAdapter;
+        const debug = vkAdapter.getDebugState();
+        setSyncStatus(debug.fallbackMode ? 'VK Sync: fallback clock' : 'VK Sync: ready');
       }
     });
 
